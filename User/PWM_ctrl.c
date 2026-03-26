@@ -100,10 +100,12 @@ void Output_boost(float duty ,float *a_high ,float *b_high)
 {
 	float d = clamp01(duty);
 	
-	float a = 1;//a_high常开
-	float b = 0;
-	
-	b = d;
+	// 【核心修复】：双向 DC-DC(四管Buck-Boost)，能量从 B(电容) 流向 A(底盘) 并升压时，
+	// 依然需要保持 B端上管常开，而是去斩波 A端！
+	// 原先你控制的是 B端斩波并让 A端常开，这实际上是把 A(底盘) 当作了输入源进行 Boost。
+	// 这会导致一接负载占空比反转，底盘电压极速泻放对地短路甚至拉低到 3V 以下！
+	float a = d;
+	float b = 1;
 	
 	if(a_high != NULL && b_high != NULL)
    {
