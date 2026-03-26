@@ -138,7 +138,7 @@ volatile float TEMP;           // 温度通道
  *   若任一 ADC 尚未完成本轮 DMA，直接 return 等待下次调用
  *   直接读取了寄存器，因此没有在dma.c里面使用库函数搬运数据
  */
-void ADC_Process(void)
+uint8_t ADC_Process(void)
 {
     extern uint16_t adc1_raw_data[3];
     extern uint16_t adc2_raw_data[3];
@@ -147,7 +147,7 @@ void ADC_Process(void)
     uint8_t adc1_done = (DMA1->ISR & DMA_ISR_TCIF1) ? 1U : 0U;
     uint8_t adc2_done = (DMA1->ISR & DMA_ISR_TCIF2) ? 1U : 0U;
 
-    if (!adc1_done) { return; }   /* ADC1 未就绪，下次再试 */
+    if (!adc1_done) { return 0; }   /* ADC1 未就绪，下次再试 */
 
     /* --- 清 ADC1 TC 标志，快照 ADC1 数据 --- */
     DMA1->IFCR = DMA_IFCR_CTCIF1;
@@ -156,7 +156,7 @@ void ADC_Process(void)
     raw[ADCF_CH_I_REFEREE] = adc1_raw_data[1];
     raw[ADCF_CH_I_A]       = adc1_raw_data[2];
 
-    if (!adc2_done) { return; }   /* ADC2 未就绪，下次再试 */
+    if (!adc2_done) { return 0; }   /* ADC2 未就绪，下次再试 */
 
     /* --- 清 ADC2 TC 标志，快照 ADC2 数据 --- */
     DMA1->IFCR = DMA_IFCR_CTCIF2;
@@ -167,7 +167,7 @@ void ADC_Process(void)
     /* --- 推入环形缓冲 --- */
     ADCF_PushSample(raw);
 
-    if (!g_adcf.ready) { return; }   /* 未满8组，继续积累 */
+    if (!g_adcf.ready) { return 0; }   /* 未满8组，继续积累 */
 
     /* --- 8组已满：均值 + IIR 滤波 --- */
     g_adcf.ready = 0U;
@@ -182,4 +182,6 @@ void ADC_Process(void)
     RE_I_REFEREE = (g_adcf.out[ADCF_CH_I_REFEREE] / POLL_ADC_MAX * POLL_VREF - POLL_VZERO) / POLL_SENS;
     RE_I_CHASSIS = (g_adcf.out[ADCF_CH_I_A]       / POLL_ADC_MAX * POLL_VREF - POLL_VZERO) / POLL_SENS;
     RE_CAP_I     = (g_adcf.out[ADCF_CH_CAP_I]     / POLL_ADC_MAX * POLL_VREF - POLL_VZERO) / POLL_SENS;
+
+    return 1;
 }

@@ -47,7 +47,7 @@ extern volatile ADCF_State_t g_adcf;
  */
 void ADCF_Init(void);       // 清零全部状态，启动前必须调用一次
 void ADCF_Start(void);      // 校准 ADC1/2，启动 DMA，禁用 DMA 中断
-void ADC_Process(void);     // 主循环轮询入口：TC标志 → 推样 → 滤波 → 物理量换算
+uint8_t ADC_Process(void);  // 主循环轮询入口：返回1表示新一次滤波和物理量换算完成，返回0表示未完成
 
 // 以下两个函数供 ADC_Process 内部使用，外部一般不直接调用
 void ADCF_PushSample(const uint16_t raw[ADCF_CH_COUNT]);  /* 写入一组原始码值到环形缓冲 */

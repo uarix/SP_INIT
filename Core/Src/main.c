@@ -156,62 +156,59 @@ int main(void)
     {
 		PID_InitAll();	
 		
+		uint32_t last_uart_tick = 0;
+		static uint8_t send_data[16];
+		static float current_duty = 0.0f;
+		
 		while(1)
 		{
-			ADC_Process();	//第一个循环里面不断处理数据（dma是不会停的）
-			
-			//这一行写数据侦测，也就是保护
-			if((RE_V_CAP >= 26.0f) || (RE_CAP_I >= 25.0f) || (RE_CAP_I <= -25.0f))
+			// 只有当ADC完成了8次采样平均（25kHz频率）后，才执行一次PID控制
+			if(ADC_Process())
 			{
-				//锁存，本次放弃使用超电
-				HAL_HRTIM_WaveformOutputStop(&hhrtim1, HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2 | 
-													   HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2);
-				Error_Handler();
-			}
-		
-			//这一行写pid控制恒定电流充电
-			HRTIM_UpdateHighDuty(0.0f, 0.0f);//先保护一手
+				//这一行写数据侦测，也就是保护
+				if((RE_V_CAP >= 26.0f) || (RE_CAP_I >= 25.0f) || (RE_CAP_I <= -25.0f))
+				{
+					//锁存，本次放弃使用超电
+					HAL_HRTIM_WaveformOutputStop(&hhrtim1, HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2 | 
+														   HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2);
+					Error_Handler();
+				}
 			
-			// while(RE_V_CAP <= 1.8f)
-			// {
-			// 	ADC_Process();
-			// 	HRTIM_UpdateHighDuty(0.1f, 1.0f);
-			// 	uint8_t send_data[16];
-			// 	float cap_i = RE_CAP_I;
-			// 	float cap_v = RE_V_CAP;
-			// 	float duty = 0.1f;
-			// 	uint8_t tail[4] = {0x00, 0x00, 0x80, 0x7F};
-			// 	memcpy(&send_data[0], &duty, 4);
-			// 	memcpy(&send_data[4], &cap_i, 4);
-			// 	memcpy(&send_data[8], &cap_v, 4);
-			// 	memcpy(&send_data[12], tail, 4);
-			// 	HAL_UART_Transmit(&huart3, send_data, sizeof(send_data), 100);
-			// }
-			
-			float pid_out = PID_Calculate(&pid_charge, -RE_CAP_I, CHARGE_CURRENT);
-			float duty = PID_Output_To_Duty(&pid_charge, pid_out);
+				// 恒流充电 PID 控制 (25kHz)
+				float pid_out = PID_Calculate(&pid_charge, -RE_CAP_I, CHARGE_CURRENT);
+				current_duty = PID_Output_To_Duty(&pid_charge, pid_out);
 
-			float a_high, b_high;
-			Charge_buck(duty, &a_high, &b_high);
-			HRTIM_UpdateHighDuty(a_high, b_high);
+				float a_high, b_high;
+				Charge_buck(current_duty, &a_high, &b_high);
+				HRTIM_UpdateHighDuty(a_high, b_high);
+			}
 			
-			//这一行集中书写所有保护(真的要写吗)
-			uint8_t send_data[16];
-			float cap_i = RE_CAP_I;
-			float cap_v = RE_V_CAP;
-			uint8_t tail[4] = {0x00, 0x00, 0x80, 0x7F};
-			memcpy(&send_data[0], &duty, 4);
-			memcpy(&send_data[4], &cap_i, 4);
-			memcpy(&send_data[8], &cap_v, 4);
-			memcpy(&send_data[12], tail, 4);
-			HAL_UART_Transmit(&huart3, send_data, sizeof(send_data), 100);
+			// 非阻塞定时发送串口数据，100Hz (10ms一次)，不再阻塞主循环
+			uint32_t current_tick = HAL_GetTick();
+			if (current_tick - last_uart_tick >= 10)
+			{
+				last_uart_tick = current_tick;
+				
+				float cap_i = RE_CAP_I;
+				float cap_v = RE_V_CAP;
+				uint8_t tail[4] = {0x00, 0x00, 0x80, 0x7F};
+				memcpy(&send_data[0], &current_duty, 4);
+				memcpy(&send_data[4], &cap_i, 4);
+				memcpy(&send_data[8], &cap_v, 4);
+				memcpy(&send_data[12], tail, 4);
+				// 使用IT非阻塞发送，如果此时没发完会返回Busy，但由于10ms远大于发送需要的1ms，基本不会冲突
+				if(huart3.gState == HAL_UART_STATE_READY)
+				{
+					HAL_UART_Transmit_IT(&huart3, send_data, sizeof(send_data));
+				}
+			}
 			
 			//这一行数据侦测，但是是电容组的电压，到24v停止充电，break进入轮询（等待冲刺模式下发）
 			if (RE_V_CAP >= 24.0f)
 			{
 				break;
 			}
-			HAL_Delay(1);
+			// 完全移除 HAL_Delay(1); 让主循环始终以最高速检测 ADC 完成标志
 		}
 		
 		//等待can的消息控制
@@ -220,24 +217,26 @@ int main(void)
 		
 		while(1)
 		{
-//			ADC_Process();	//第二个循环里面不断处理数据
-//			
-//			//这一行写数据侦测，给pid
-//			if((RE_V_CAP >= 26.0f) || (RE_CAP_I >= 25.0f)  || (RE_CAP_I <= -25.0f))
+//			// 第二个循环：恒压输出放电
+//			if(ADC_Process())
 //			{
-//				//锁存，本次放弃使用超电
-//				HAL_HRTIM_WaveformOutputStop(&hhrtim1, HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2 | 
-//													   HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2);
-//				Error_Handler();
+//				//这一行写数据侦测，给pid
+//				if((RE_V_CAP >= 26.0f) || (RE_CAP_I >= 25.0f)  || (RE_CAP_I <= -25.0f))
+//				{
+//					//锁存，本次放弃使用超电
+//					HAL_HRTIM_WaveformOutputStop(&hhrtim1, HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2 | 
+//														   HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2);
+//					Error_Handler();
+//				}
+//				
+//				//这一行写pid控制恒定电压输出，boost模式，把电容组小于24v的电压升到24v输出
+//				float pid_out = -PID_Calculate(&pid_discharge, RE_V_CAP, OUTPUT_VOLTAGE);
+//				float duty = PID_Output_To_Duty(&pid_discharge, pid_out);
+//
+//				float a_high, b_high;
+//				Output_boost(duty, &a_high, &b_high);
+//				HRTIM_UpdateHighDuty(a_high, b_high);
 //			}
-//			
-//			//这一行写pid控制恒定电压输出，boost模式，把电容组小于24v的电压升到24v输出
-//			float pid_out = -PID_Calculate(&pid_discharge, RE_V_CAP, OUTPUT_VOLTAGE);
-//			float duty = PID_Output_To_Duty(&pid_discharge, pid_out);
-
-//			float a_high, b_high;
-//			Output_boost(duty, &a_high, &b_high);
-//			HRTIM_UpdateHighDuty(a_high, b_high);
 //			
 //			//数据侦测，电容组电压不得低于12v，否则会过流烧毁mos，恒定功率时，电压减少，电流增大			
 //			//如果cap小于等于12v，break，放电结束
@@ -245,7 +244,6 @@ int main(void)
 //			{
 //				break;
 //			}
-HAL_Delay(10);
 		}
 		
 		
@@ -346,13 +344,14 @@ void HAL_CAN_RxFifo1MsgPendingCallback(CAN_HandleTypeDef *hcan)
 void PID_InitAll(void)
 {
     // 充电：电流控制，目标电流 2.0A，反馈范围 0~3A
-    // max_out 设为 1000，则 PID 输出范围 -1000~1000，映射后 duty = (out+1000)/2000
+    // max_out 设为 1000，映射后 duty = out / 1000. 
+    // 现修正为 25kHz 控制频率，大幅减小开局突变的 kp，并加入微量 ki 以消除静差及抑制过冲
     PID_Init(&pid_charge,
-             100.0f,      // kp
-             0.0f,      // ki
-             0.01f,     // kd
+             5.0f,      // kp (降低以避免启动过冲占空比)
+             0.02f,     // ki (25kHz下，0.02每秒积分积聚约 500，可实现 2 秒内稳定软爬坡)
+             0.0f,      // kd (电流环不建议用D)
              1000,      // max_out   (绝对值)
-             100,       // integral_limit (积分限幅)
+             500,       // integral_limit (积分限幅减小为最大输出的一半，防深度饱和)
              0.01f,     // deadband  (死区)
              10.0f,     // A (变积分系数A)
              5.0f,      // B (变积分系数B)
