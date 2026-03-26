@@ -382,7 +382,8 @@ void PID_InitAll(void)
  */
 static inline float PID_Output_To_Duty(PID_TypeDef *pid, float output)
 {
-    float duty = (output + pid->MaxOut) / (2.0f * pid->MaxOut);
+    // 修改原先的半桥映射(0输出对应50%占空比)，改为单极Buck/Boost映射(0输出对应0%占空比)。
+    float duty = output / pid->MaxOut;
     if (duty < 0.0f) duty = 0.0f;
     if (duty > 1.0f) duty = 1.0f;
     return duty;
