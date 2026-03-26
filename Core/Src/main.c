@@ -344,14 +344,13 @@ void HAL_CAN_RxFifo1MsgPendingCallback(CAN_HandleTypeDef *hcan)
 void PID_InitAll(void)
 {
     // 充电：电流控制，目标电流 2.0A，反馈范围 0~3A
-    // max_out 设为 1000，映射后 duty = out / 1000. 
-    // 现修正为 25kHz 控制频率，大幅减小开局突变的 kp，并加入微量 ki 以消除静差及抑制过冲
+    // max_out 设为 1000，积分满量程应当允许推到 1000（即 100% 占空比）
     PID_Init(&pid_charge,
              5.0f,      // kp (降低以避免启动过冲占空比)
              0.02f,     // ki (25kHz下，0.02每秒积分积聚约 500，可实现 2 秒内稳定软爬坡)
              0.0f,      // kd (电流环不建议用D)
-             1000,      // max_out   (绝对值)
-             500,       // integral_limit (积分限幅减小为最大输出的一半，防深度饱和)
+             1000,      // max_out   (对应 1.0 的满占空比)
+             1000,      // integral_limit (修改为1000！否则积分上限卡在500意味着只有最大50%的占空比！)
              0.01f,     // deadband  (死区)
              10.0f,     // A (变积分系数A)
              5.0f,      // B (变积分系数B)
