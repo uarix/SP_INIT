@@ -176,7 +176,17 @@ int main(void)
 			
 				// 恒流充电 PID 控制 (25kHz)
 				float pid_out = PID_Calculate(&pid_charge, -RE_CAP_I, CHARGE_CURRENT);
-				current_duty = PID_Output_To_Duty(&pid_charge, pid_out);
+				
+				// 【解决带电启动反灌问题】前馈控制：计算当前电容与底盘的理论平衡占空比
+				float v_in = (RE_V_CHASSIS > 10.0f) ? RE_V_CHASSIS : 24.0f; 
+				float duty_ff = RE_V_CAP / v_in;
+				if (duty_ff > 0.95f) duty_ff = 0.95f;
+				if (duty_ff < 0.0f) duty_ff = 0.0f;
+				
+				// 实际占空比 = 前馈平衡占空比 + PID微调
+				current_duty = PID_Output_To_Duty(&pid_charge, pid_out) + duty_ff;
+				if (current_duty > 1.0f) current_duty = 1.0f;
+				if (current_duty < 0.0f) current_duty = 0.0f;
 
 				float a_high, b_high;
 				Charge_buck(current_duty, &a_high, &b_high);
@@ -388,7 +398,7 @@ void PID_InitAll(void)
              0.02f,     // ki (25kHz下，0.02每秒积分积聚约 500，可实现 2 秒内稳定软爬坡)
              0.0f,      // kd (电流环不建议用D)
              1000,      // max_out   (对应 1.0 的满占空比)
-             1000,      // integral_limit (修改为1000！否则积分上限卡在500意味着只有最大50%的占空比！)
+             200,       // integral_limit (因为加入了前馈，积分仅用于微调补偿死区和压降，限20%) (修改为1000！否则积分上限卡在500意味着只有最大50%的占空比！)
              0.01f,     // deadband  (死区)
              10.0f,     // A (变积分系数A)
              5.0f,      // B (变积分系数B)
