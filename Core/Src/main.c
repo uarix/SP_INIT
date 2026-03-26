@@ -56,7 +56,7 @@
 /* USER CODE BEGIN PV */
 #define TIMERA_PERIOD   360U     //pwm周期tick值
 
-#define CHARGE_CURRENT 0.5f      //3.0f
+#define CHARGE_CURRENT 3.0f      //3.0f
 #define OUTPUT_VOLTAGE 24.0f	   //两个是pid目标，对应充放电的时候
 
 #define CTRL_PWM_START_TICKS   (2U)  // 可按示波器观测调整：1~10 都可以，防止0u的时候打不开pwm输出，加上偏移
@@ -157,7 +157,7 @@ int main(void)
 		PID_InitAll();	
 		
 		uint32_t last_uart_tick = 0;
-		static uint8_t send_data[16];
+		static uint8_t send_data[24];
 		static float current_duty = 0.0f;
 		
 		while(1)
@@ -195,7 +195,7 @@ int main(void)
 				memcpy(&send_data[0], &current_duty, 4);
 				memcpy(&send_data[4], &cap_i, 4);
 				memcpy(&send_data[8], &cap_v, 4);
-				memcpy(&send_data[12], tail, 4);
+				memcpy(&send_data[20], tail, 4);
 				// 使用IT非阻塞发送，如果此时没发完会返回Busy，但由于10ms远大于发送需要的1ms，基本不会冲突
 				if(huart3.gState == HAL_UART_STATE_READY)
 				{
@@ -266,14 +266,19 @@ int main(void)
 				last_uart_tick_dis = current_tick;
 				
 				float cap_i = RE_CAP_I;
+				float cap_v = RE_V_CAP;
 				// 放电时主看恒压输出能力，传出 chassis_v
 				float chassis_v = RE_V_CHASSIS;
+				float chassis_i = RE_I_CHASSIS;
+				
 				uint8_t tail[4] = {0x00, 0x00, 0x80, 0x7F};
 
 				memcpy(&send_data[0], &current_duty_dis, 4);
 				memcpy(&send_data[4], &cap_i, 4);
-				memcpy(&send_data[8], &chassis_v, 4);
-				memcpy(&send_data[12], tail, 4);
+				memcpy(&send_data[8], &cap_v, 4);
+				memcpy(&send_data[12], &chassis_v, 4);
+				memcpy(&send_data[16], &chassis_i, 4);
+				memcpy(&send_data[20], tail, 4);
 				
 				if(huart3.gState == HAL_UART_STATE_READY)
 				{
