@@ -204,7 +204,7 @@ int main(void)
 			}
 			
 			//这一行数据侦测，但是是电容组的电压，到24v停止充电，break进入轮询（等待冲刺模式下发）
-			if (RE_V_CAP >= 24.0f)
+			if (RE_V_CAP >= 23.5f)
 			{
 				break;
 			}
@@ -212,42 +212,75 @@ int main(void)
 		}
 		
 		//等待can的消息控制
-		
+
 		PID_InitAll();	
 		
+		uint32_t last_uart_tick_dis = 0;
+		static float current_duty_dis = 1.0f; // 初始占空比 1.0 (不起压，直通状态)
+
 		while(1)
 		{
-//			// 第二个循环：恒压输出放电
-//			if(ADC_Process())
-//			{
-//				//这一行写数据侦测，给pid
-//				if((RE_V_CAP >= 26.0f) || (RE_CAP_I >= 25.0f)  || (RE_CAP_I <= -25.0f))
-//				{
-//					//锁存，本次放弃使用超电
-//					HAL_HRTIM_WaveformOutputStop(&hhrtim1, HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2 | 
-//														   HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2);
-//					Error_Handler();
-//				}
-//				
-//				//这一行写pid控制恒定电压输出，boost模式，把电容组小于24v的电压升到24v输出
-//				float pid_out = -PID_Calculate(&pid_discharge, RE_V_CAP, OUTPUT_VOLTAGE);
-//				float duty = PID_Output_To_Duty(&pid_discharge, pid_out);
-//
-//				float a_high, b_high;
-//				Output_boost(duty, &a_high, &b_high);
-//				HRTIM_UpdateHighDuty(a_high, b_high);
-//			}
-//			
-//			//数据侦测，电容组电压不得低于12v，否则会过流烧毁mos，恒定功率时，电压减少，电流增大			
-//			//如果cap小于等于12v，break，放电结束
-//			if (RE_V_CAP <= 12.0f)
-//			{
-//				break;
-//			}
+			// 第二个循环：恒压输出放电，25kHz同步控制
+			if(ADC_Process())
+			{
+				// 依旧保留致命硬件级保护：
+				if((RE_V_CAP >= 26.0f) || (RE_CAP_I >= 25.0f)  || (RE_CAP_I <= -25.0f))
+				{
+					//锁存，本次放弃使用超电
+					HAL_HRTIM_WaveformOutputStop(&hhrtim1, HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2 | 
+														   HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2);
+					Error_Handler();
+				}
+				
+				// 业务保护：放电电容电压过低 或 电流绝对值超过15A
+				float abs_cap_i = (RE_CAP_I > 0) ? RE_CAP_I : -RE_CAP_I;
+				if (RE_V_CAP <= 10.0f || abs_cap_i >= 15.0f)
+				{
+					// 退出放电循环，回到重新充电阶段
+					break;
+				}
+				
+				// 这一行写pid控制恒定电压输出，boost模式。
+				// 目标是 OUTPUT_VOLTAGE (24V), 当前测量为 RE_V_CHASSIS
+				float pid_out = PID_Calculate(&pid_discharge, RE_V_CHASSIS, OUTPUT_VOLTAGE);
+				
+				// 根据 Boost 逻辑：B端占空比d越大，升压越小。最大升压幅度受到限制。
+				// 如果欠压了（Measure < Target），误差Err > 0，pid_out增大
+				// 我们需要它增大的时候，占空比d反而减小进而提升电压。
+				float duty_reduction = PID_Output_To_Duty(&pid_discharge, pid_out);
+				current_duty_dis = 1.0f - duty_reduction;
+				
+				// 底线安全占空比限制：不要让它降得太低（例如低于0.2等同于五倍的暴力升压，非常危险）
+				if(current_duty_dis < 0.2f) current_duty_dis = 0.2f;
+				if(current_duty_dis > 1.0f) current_duty_dis = 1.0f;
+
+				float a_high, b_high;
+				Output_boost(current_duty_dis, &a_high, &b_high);
+				HRTIM_UpdateHighDuty(a_high, b_high);
+			}
+			
+			// 非阻塞定时发送串口数据
+			uint32_t current_tick = HAL_GetTick();
+			if (current_tick - last_uart_tick_dis >= 10)
+			{
+				last_uart_tick_dis = current_tick;
+				
+				float cap_i = RE_CAP_I;
+				// 放电时主看恒压输出能力，传出 chassis_v
+				float chassis_v = RE_V_CHASSIS;
+				uint8_t tail[4] = {0x00, 0x00, 0x80, 0x7F};
+
+				memcpy(&send_data[0], &current_duty_dis, 4);
+				memcpy(&send_data[4], &cap_i, 4);
+				memcpy(&send_data[8], &chassis_v, 4);
+				memcpy(&send_data[12], tail, 4);
+				
+				if(huart3.gState == HAL_UART_STATE_READY)
+				{
+					HAL_UART_Transmit_IT(&huart3, send_data, sizeof(send_data));
+				}
+			}
 		}
-		
-		
-		
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -358,14 +391,15 @@ void PID_InitAll(void)
              0.8f,      // derivative_filtering_coefficient (微分滤波)
              Integral_Limit | Trapezoid_Intergral | OutputFilter);   // 开启的改进项
 
-    // 放电：电压控制，目标电压 24.0V，反馈范围 0~30V
+    // 放电：电压控制，目标电压 24.0V
+    // 为了适配 25kHz 高频控制并避免升压失控，调整如下
     PID_Init(&pid_discharge,
-             0.2f,      // kp
-             0.05f,     // ki
-             0.005f,    // kd
-             1000,      // max_out
-             800,       // integral_limit
-             0.2f,      // deadband
+             5.0f,      // kp (增加以快速响应负载跌落)
+             0.02f,     // ki (高频采样下微调以缓慢吃平误差，防止积分暴走)
+             0.0f,      // kd (外环尽量不用微分)
+             1000,      // max_out (全量程映射)
+             800,       // integral_limit (限制最高占空比降幅，给输出保留安全底线)
+             0.05f,     // deadband (死区，避免轻微波动引起占空比反复拉扯)
              10.0f,     // A
              5.0f,      // B
              0.9f,      // output_filtering_coefficient
